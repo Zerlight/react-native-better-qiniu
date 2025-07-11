@@ -75,23 +75,13 @@ const handleCancel = () => {
 
 ## Example
 
+*NPM package does not include the example app. If you need it, please clone the GitHub repository and run the example app from there.*
+
 Under the `example` directory, you can find a complete React Native application that demonstrates how to use this library. It includes:
 - A simple UI for selecting a file and uploading it to Qiniu.
 - Progress tracking and cancellation functionality.
 
-```sh
-yarn example install
-
-# Starting Android
-yarn example android
-
-# Starting iOS
-cd example/ios
-bundle install
-bundle exec pod install
-cd ../..
-yarn example ios
-```
+To run the example app, please follow the instructions in `example/README.md`.
 
 -----
 

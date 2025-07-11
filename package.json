@@ -43,7 +43,10 @@
   "keywords": [
     "react-native",
     "ios",
-    "android"
+    "android",
+    "qiniu",
+    "kodo",
+    "turbo-module"
   ],
   "repository": {
     "type": "git",

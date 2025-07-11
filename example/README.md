@@ -4,6 +4,22 @@ This is a new [**React Native**](https://reactnative.dev) project, bootstrapped 
 
 > **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
 
+## Step 0. Configure Qiniu credentials
+
+Before running the example, you need to configure your Qiniu AK, SK and bucket name in the `example/src/App.tsx` file. Make sure to replace the placeholder values with your actual credentials.
+
+```javascript
+// example/src/App.tsx
+
+// =[!]= IMPORTANT: This is only for testing purposes. Do NOT use this in production. =[!]=
+// Distribute your own access key and secret key from server instead of hardcoded.
+
+// Replace with your own bucket name, access key, and secret key.
+const BUCKET_NAME = 'your-bucket-name'; // Replace with your actual bucket name
+const AK = 'your-access-key'; // Replace with your actual Access Key
+const SK = 'your-secret-key'; // Replace with your actual Secret Key
+```
+
 ## Step 1: Start Metro
 
 First, you will need to run **Metro**, the JavaScript build tool for React Native.
