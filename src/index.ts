@@ -40,6 +40,32 @@ const QiniuModule: QiniuNativeModule = NativeModules.BetterQiniu
 const instanceCache = new Map<string, string>();
 const refCounts = new Map<string, number>();
 
+export interface QiniuTokenProviderInput {
+  uploadId: string;
+  key: string;
+  filePath: string;
+}
+
+export type QiniuTokenProvider = (
+  input: QiniuTokenProviderInput
+) => string | Promise<string>;
+
+export interface QiniuAdvancedConfig {
+  /**
+   * Only valid when using AutoZone. Please note that configurations are required for both Qiniu server-side SDK and Qiniu bucket settings.
+   */
+  accelerateUploading?: boolean;
+  /**
+   * In bytes. e.g., 4 * 1024 * 1024 for 4MB
+   */
+  chunkSize?: number;
+  retryMax?: number;
+  retryInterval?: number;
+  timeoutInterval?: number;
+  allowBackupHost?: boolean;
+  concurrentTaskCount?: number;
+}
+
 /**
  * Configuration for a Qiniu instance.
  * Mirrors the native SDK options.
@@ -59,25 +85,35 @@ export interface QiniuConfig {
   putThreshold?: number;
   useConcurrentResumeUpload?: boolean;
   resumeUploadVersion?: 'v1' | 'v2';
+  useHttps?: boolean;
+  tokenProvider?: QiniuTokenProvider;
+  advanced?: QiniuAdvancedConfig;
   /**
    * Only valid when using AutoZone. Please note that configurations are required for both Qiniu server-side SDK and Qiniu bucket settings.
+   * @deprecated Use `advanced.accelerateUploading` instead.
    */
   accelerateUploading?: boolean;
   /**
    * If true, a new instance will be created no matter if an existing instance with the same configuration exists.
    *
    * The library will not automatically create a new instance if an existing one with the same configuration exists.
+   * @deprecated Use `Qiniu.create(config)` instead.
    */
   enforceNewInstance?: boolean;
   /**
    * In bytes. e.g., 4 * 1024 * 1024 for 4MB
+   * @deprecated Use `advanced.chunkSize` instead.
    */
   chunkSize?: number;
+  /** @deprecated Use `advanced.retryMax` instead. */
   retryMax?: number;
+  /** @deprecated Use `advanced.retryInterval` instead. */
   retryInterval?: number;
+  /** @deprecated Use `advanced.timeoutInterval` instead. */
   timeoutInterval?: number;
-  useHttps?: boolean;
+  /** @deprecated Use `advanced.allowBackupHost` instead. */
   allowBackupHost?: boolean;
+  /** @deprecated Use `advanced.concurrentTaskCount` instead. */
   concurrentTaskCount?: number;
 }
 
@@ -97,6 +133,18 @@ interface QiniuFullConfig {
   allowBackupHost?: boolean;
   concurrentTaskCount?: number;
 }
+
+interface NormalizedQiniuConfig {
+  enforceNewInstance: boolean;
+  fullConfig: QiniuFullConfig;
+  tokenProvider?: QiniuTokenProvider;
+}
+
+const compactConfig = <T extends object>(config: T) => {
+  return Object.fromEntries(
+    Object.entries(config).filter(([, value]) => value !== undefined)
+  ) as Partial<T>;
+};
 
 /**
  * Represents the predefined regions for Qiniu upload zones.
@@ -213,10 +261,10 @@ export interface UploadOptions {
    *
    * @example
    * decodeURIComponent('file:///var/%E5%A4%A2'.replace('file://', ''));
-   */
+  */
   filePath: string;
   key: string;
-  token: string;
+  token?: string;
   onProgress?: (event: UploadProgressEvent) => void;
 }
 
@@ -299,18 +347,83 @@ export class UploadTask {
 export class Qiniu {
   private readonly instanceId: string;
   private readonly instanceConfigKey: string;
+  private readonly tokenProvider?: QiniuTokenProvider;
+
+  static shared(config: QiniuConfig = {}): Qiniu {
+    return new Qiniu(config);
+  }
+
+  static create(config: QiniuConfig = {}): Qiniu {
+    return new Qiniu(config, { forceNewInstance: true });
+  }
 
   /**
    * Creates and configures a new Qiniu client instance.
    * @param config Configuration options for this instance.
+   * @deprecated Prefer `Qiniu.shared(config)` or `Qiniu.create(config)` to make
+   * lifecycle intent explicit.
    */
-  constructor(config: QiniuConfig = {}) {
-    const { enforceNewInstance = false, ...sdkConfig } = config;
+  constructor(
+    config: QiniuConfig = {},
+    options: { forceNewInstance?: boolean } = {}
+  ) {
+    const normalizedConfig = Qiniu.normalizeConfig(config);
+    const fullConfig = normalizedConfig.fullConfig;
+    const forceNewInstance =
+      options.forceNewInstance ?? normalizedConfig.enforceNewInstance;
+
+    this.instanceConfigKey = JSON.stringify(fullConfig);
+    this.tokenProvider = normalizedConfig.tokenProvider;
+    if (instanceCache.has(this.instanceConfigKey) && !forceNewInstance) {
+      this.instanceId = instanceCache.get(this.instanceConfigKey)!;
+      refCounts.set(this.instanceId, (refCounts.get(this.instanceId) || 0) + 1);
+    } else {
+      this.instanceId = uuid.v4();
+      if (!forceNewInstance) {
+        instanceCache.set(this.instanceConfigKey, this.instanceId);
+      }
+      refCounts.set(this.instanceId, 1);
+      QiniuModule.configure(this.instanceId, fullConfig);
+    }
+  }
+
+  private static normalizeConfig(config: QiniuConfig): NormalizedQiniuConfig {
+    const {
+      advanced,
+      enforceNewInstance = false,
+      tokenProvider,
+      zone = 'auto',
+      putThreshold,
+      useConcurrentResumeUpload,
+      resumeUploadVersion,
+      useHttps,
+      accelerateUploading,
+      chunkSize,
+      retryMax,
+      retryInterval,
+      timeoutInterval,
+      allowBackupHost,
+      concurrentTaskCount,
+    } = config;
     const fullConfig: QiniuFullConfig = {
-      ...sdkConfig,
+      ...compactConfig({
+        putThreshold,
+        useConcurrentResumeUpload,
+        resumeUploadVersion,
+        useHttps,
+      }),
+      ...compactConfig({
+        accelerateUploading,
+        chunkSize,
+        retryMax,
+        retryInterval,
+        timeoutInterval,
+        allowBackupHost,
+        concurrentTaskCount,
+      }),
+      ...compactConfig(advanced ?? {}),
       zone: undefined,
     };
-    const zone = sdkConfig.zone ?? 'auto';
 
     switch (typeof zone) {
       case 'string':
@@ -336,16 +449,11 @@ export class Qiniu {
         );
     }
 
-    this.instanceConfigKey = JSON.stringify(fullConfig);
-    if (instanceCache.has(this.instanceConfigKey) && !enforceNewInstance) {
-      this.instanceId = instanceCache.get(this.instanceConfigKey)!;
-      refCounts.set(this.instanceId, (refCounts.get(this.instanceId) || 0) + 1);
-    } else {
-      this.instanceId = uuid.v4();
-      instanceCache.set(this.instanceConfigKey, this.instanceId);
-      refCounts.set(this.instanceId, 1);
-      QiniuModule.configure(this.instanceId, fullConfig);
-    }
+    return {
+      enforceNewInstance,
+      fullConfig,
+      tokenProvider,
+    };
   }
 
   /**
@@ -376,17 +484,40 @@ export class Qiniu {
       }
     );
 
-    const nativeOptions: NativeUploadOptions = {
-      uploadId: task.uploadId,
-      filePath: options.filePath,
-      key: options.key,
-      token: options.token,
-      hasProgressListener: true,
-    };
+    return this.resolveUploadToken(task, options)
+      .then((token) => {
+        const nativeOptions: NativeUploadOptions = {
+          uploadId: task.uploadId,
+          filePath: options.filePath,
+          key: options.key,
+          token,
+          hasProgressListener: true,
+        };
 
-    return QiniuModule.upload(this.instanceId, nativeOptions).finally(() => {
-      progressSubscription.remove();
-    });
+        return QiniuModule.upload(this.instanceId, nativeOptions);
+      })
+      .finally(() => {
+        progressSubscription.remove();
+      });
+  }
+
+  private async resolveUploadToken(
+    task: UploadTask,
+    options: Omit<UploadOptions, 'uploadId' | 'onProgress'>
+  ): Promise<string> {
+    if (options.token) {
+      return options.token;
+    }
+
+    if (this.tokenProvider) {
+      return this.tokenProvider({
+        uploadId: task.uploadId,
+        key: options.key,
+        filePath: options.filePath,
+      });
+    }
+
+    throw new Error('TOKEN_MISSING');
   }
 
   /**
