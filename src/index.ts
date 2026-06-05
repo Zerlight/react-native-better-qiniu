@@ -1,5 +1,4 @@
 import { NativeModules, Platform } from 'react-native';
-import type { EventSubscription } from 'react-native';
 import uuid from 'react-native-uuid';
 import type { EventEmitter } from 'react-native/Libraries/Types/CodegenTypes';
 
@@ -11,7 +10,7 @@ const LINKING_ERROR =
 
 interface QiniuNativeModule {
   configure(instanceId: string, options: QiniuFullConfig): void;
-  upload(instanceId: string, options: UploadOptions): Promise<any>;
+  upload(instanceId: string, options: NativeUploadOptions): Promise<any>;
   cancel(uploadId: string): void;
   destroy(instanceId: string): void;
 
@@ -184,12 +183,27 @@ export interface UploadProgressEvent {
   percent: number;
 }
 
+export type UploadTaskStatus =
+  | 'idle'
+  | 'uploading'
+  | 'success'
+  | 'error'
+  | 'cancelled';
+
+export type UploadProgressListener = (
+  event: UploadProgressEvent
+) => void;
+
+export interface UploadTaskSubscription {
+  remove(): void;
+}
+
 export interface UploadOptions {
   /**
    * A local identifier for this upload task. Use this value to filter progress
    * and cancel the task, especially when multiple uploads use the same Qiniu key.
    */
-  uploadId: string;
+  uploadId?: string;
   /**
    * The local file path to upload.
    *
@@ -204,6 +218,82 @@ export interface UploadOptions {
   key: string;
   token: string;
   onProgress?: (event: UploadProgressEvent) => void;
+}
+
+interface NativeUploadOptions {
+  uploadId: string;
+  filePath: string;
+  key: string;
+  token: string;
+  hasProgressListener: boolean;
+}
+
+export class UploadTask {
+  readonly uploadId: string;
+  readonly key: string;
+
+  private readonly qiniu: Qiniu;
+  private readonly options: Omit<UploadOptions, 'uploadId' | 'onProgress'>;
+  private readonly listeners = new Set<UploadProgressListener>();
+  private uploadPromise: Promise<any> | null = null;
+
+  status: UploadTaskStatus = 'idle';
+
+  constructor(qiniu: Qiniu, options: UploadOptions) {
+    this.qiniu = qiniu;
+    this.uploadId = options.uploadId ?? String(uuid.v4());
+    this.key = options.key;
+    this.options = {
+      filePath: options.filePath,
+      key: options.key,
+      token: options.token,
+    };
+
+    if (options.onProgress) {
+      this.onProgress(options.onProgress);
+    }
+  }
+
+  onProgress(listener: UploadProgressListener): UploadTaskSubscription {
+    this.listeners.add(listener);
+
+    return {
+      remove: () => {
+        this.listeners.delete(listener);
+      },
+    };
+  }
+
+  start(): Promise<any> {
+    if (this.uploadPromise) {
+      return this.uploadPromise;
+    }
+
+    this.status = 'uploading';
+    this.uploadPromise = this.qiniu
+      .startUploadTask(this, this.options, (event) => {
+        this.listeners.forEach((listener) => {
+          listener(event);
+        });
+      })
+      .then((result) => {
+        this.status = 'success';
+        return result;
+      })
+      .catch((error) => {
+        if (this.status !== 'cancelled') {
+          this.status = 'error';
+        }
+        throw error;
+      });
+
+    return this.uploadPromise;
+  }
+
+  cancel(): void {
+    this.status = 'cancelled';
+    this.qiniu.cancel(this.uploadId);
+  }
 }
 
 export class Qiniu {
@@ -262,28 +352,40 @@ export class Qiniu {
    * Uploads a file using this instance's configuration.
    * @param options The upload options, including the file path and progress callback.
    * @returns A promise that resolves with the server's response upon success.
+   * @deprecated Prefer `createUploadTask(options).start()` for task-scoped
+   * progress, cancellation, and status.
    */
   upload(options: UploadOptions): Promise<any> {
-    let progressSubscription: EventSubscription | null = null;
+    return this.createUploadTask(options).start();
+  }
 
-    const nativeOptions = {
-      ...options,
-      // Explicitly tell the native side if a progress listener is attached for this call.
-      hasProgressListener: !!options.onProgress,
+  createUploadTask(options: UploadOptions): UploadTask {
+    return new UploadTask(this, options);
+  }
+
+  startUploadTask(
+    task: UploadTask,
+    options: Omit<UploadOptions, 'uploadId' | 'onProgress'>,
+    onProgress: UploadProgressListener
+  ): Promise<any> {
+    const progressSubscription = QiniuModule.onQNUpProgressed(
+      (event: UploadProgressEvent) => {
+        if (event.uploadId === task.uploadId) {
+          onProgress(event);
+        }
+      }
+    );
+
+    const nativeOptions: NativeUploadOptions = {
+      uploadId: task.uploadId,
+      filePath: options.filePath,
+      key: options.key,
+      token: options.token,
+      hasProgressListener: true,
     };
 
-    if (options.onProgress) {
-      progressSubscription = QiniuModule.onQNUpProgressed(
-        (event: UploadProgressEvent) => {
-          if (event.uploadId === options.uploadId) {
-            options.onProgress?.(event);
-          }
-        }
-      );
-    }
-
     return QiniuModule.upload(this.instanceId, nativeOptions).finally(() => {
-      progressSubscription?.remove();
+      progressSubscription.remove();
     });
   }
 
@@ -291,6 +393,8 @@ export class Qiniu {
    * Cancels an ongoing upload. This is a static method as cancellation
    * is tied to the upload ID, not the configuration instance.
    * @param uploadId The unique local ID of the upload to cancel.
+   * @deprecated Prefer `UploadTask.cancel()` so cancellation stays scoped to
+   * the task instance.
    */
   cancel(uploadId: string): void {
     QiniuModule.cancel(uploadId);

@@ -11,7 +11,7 @@ const createNativeModule = (): NativeModuleMock => ({
   upload: jest.fn(() => Promise.resolve({})),
   cancel: jest.fn(),
   destroy: jest.fn(),
-  onQNUpProgressed: jest.fn(),
+  onQNUpProgressed: jest.fn(() => ({ remove: jest.fn() })),
 });
 
 let nativeModule: NativeModuleMock;
@@ -98,6 +98,28 @@ describe('Qiniu configuration', () => {
 });
 
 describe('Qiniu uploads', () => {
+  it('creates upload tasks with explicit and generated upload IDs', () => {
+    const { Qiniu } = loadLibrary();
+    const qiniu = new Qiniu();
+
+    const explicitTask = qiniu.createUploadTask({
+      uploadId: 'upload-explicit',
+      filePath: '/tmp/file.jpg',
+      key: 'explicit-key.jpg',
+      token: 'token',
+    });
+    const generatedTask = qiniu.createUploadTask({
+      filePath: '/tmp/file.jpg',
+      key: 'generated-key.jpg',
+      token: 'token',
+    });
+
+    expect(explicitTask.uploadId).toBe('upload-explicit');
+    expect(explicitTask.key).toBe('explicit-key.jpg');
+    expect(explicitTask.status).toBe('idle');
+    expect(generatedTask.uploadId).toBe('uuid-2');
+  });
+
   it('filters progress events by uploadId', async () => {
     const { Qiniu } = loadLibrary();
     const remove = jest.fn();
@@ -159,6 +181,92 @@ describe('Qiniu uploads', () => {
     expect(remove).toHaveBeenCalled();
   });
 
+  it('supports task-scoped progress listeners and unsubscribe', async () => {
+    const { Qiniu } = loadLibrary();
+    const listener1 = jest.fn();
+    const listener2 = jest.fn();
+    let resolveUpload: (value: string) => void = () => {};
+    let progressHandler:
+      | ((event: { uploadId: string; key: string; percent: number }) => void)
+      | undefined;
+
+    nativeModule.onQNUpProgressed.mockImplementation((handler) => {
+      progressHandler = handler;
+      return { remove: jest.fn() };
+    });
+    nativeModule.upload.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveUpload = resolve;
+        })
+    );
+
+    const qiniu = new Qiniu();
+    const task = qiniu.createUploadTask({
+      uploadId: 'upload-1',
+      filePath: '/tmp/file.jpg',
+      key: 'same-key.jpg',
+      token: 'token',
+    });
+    task.onProgress(listener1);
+    const subscription = task.onProgress(listener2);
+    subscription.remove();
+
+    const uploadPromise = task.start();
+    progressHandler?.({
+      uploadId: 'upload-1',
+      key: 'same-key.jpg',
+      percent: 0.5,
+    });
+    resolveUpload('{"ok":true}');
+    await uploadPromise;
+
+    expect(listener1).toHaveBeenCalledWith({
+      uploadId: 'upload-1',
+      key: 'same-key.jpg',
+      percent: 0.5,
+    });
+    expect(listener2).not.toHaveBeenCalled();
+  });
+
+  it('starts a task only once', async () => {
+    const { Qiniu } = loadLibrary();
+    const qiniu = new Qiniu();
+    const task = qiniu.createUploadTask({
+      uploadId: 'upload-1',
+      filePath: '/tmp/file.jpg',
+      key: 'same-key.jpg',
+      token: 'token',
+    });
+
+    nativeModule.upload.mockResolvedValue('{"ok":true}');
+
+    const promise1 = task.start();
+    const promise2 = task.start();
+    const result = await promise2;
+
+    expect(promise2).toBe(promise1);
+    expect(result).toBe('{"ok":true}');
+    expect(task.status).toBe('success');
+    expect(nativeModule.upload).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a task by uploadId', () => {
+    const { Qiniu } = loadLibrary();
+    const qiniu = new Qiniu();
+    const task = qiniu.createUploadTask({
+      uploadId: 'upload-1',
+      filePath: '/tmp/file.jpg',
+      key: 'same-key.jpg',
+      token: 'token',
+    });
+
+    task.cancel();
+
+    expect(task.status).toBe('cancelled');
+    expect(nativeModule.cancel).toHaveBeenCalledWith('upload-1');
+  });
+
   it('cancels by uploadId', () => {
     const { Qiniu } = loadLibrary();
     const qiniu = new Qiniu();
@@ -168,3 +276,5 @@ describe('Qiniu uploads', () => {
     expect(nativeModule.cancel).toHaveBeenCalledWith('upload-1');
   });
 });
+
+export {};
