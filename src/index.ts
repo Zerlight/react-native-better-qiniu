@@ -73,7 +73,7 @@ export interface QiniuConfig {
   /**
    * In bytes. e.g., 4 * 1024 * 1024 for 4MB
    */
-  chuckSize?: number;
+  chunkSize?: number;
   retryMax?: number;
   retryInterval?: number;
   timeoutInterval?: number;
@@ -202,33 +202,34 @@ export interface UploadOptions {
 
 export class Qiniu {
   private readonly instanceId: string;
-  private readonly instanceConfig: QiniuFullConfig;
+  private readonly instanceConfigKey: string;
 
   /**
    * Creates and configures a new Qiniu client instance.
    * @param config Configuration options for this instance.
    */
   constructor(config: QiniuConfig = {}) {
-    const enforceNewInstance = config.enforceNewInstance ?? false;
-    config.enforceNewInstance = undefined;
-    let fullConfig: QiniuFullConfig = {
-      ...config,
+    const { enforceNewInstance = false, ...sdkConfig } = config;
+    const fullConfig: QiniuFullConfig = {
+      ...sdkConfig,
       zone: undefined,
     };
-    switch (typeof config.zone) {
+    const zone = sdkConfig.zone ?? 'auto';
+
+    switch (typeof zone) {
       case 'string':
-        if (Object.values(ZoneRegionId).includes(config.zone as ZoneRegionId)) {
-          fullConfig.zone = config.zone;
-        } else if (config.zone === 'auto') {
+        if (Object.values(ZoneRegionId).includes(zone as ZoneRegionId)) {
+          fullConfig.zone = zone;
+        } else if (zone === 'auto') {
         } else {
-          throw new Error(`Invalid zone: ${config.zone}`);
+          throw new Error(`Invalid zone: ${zone}`);
         }
         break;
       case 'object':
-        if (config.zone instanceof ZoneCustomDomains) {
-          fullConfig.domains = config.zone.domains;
-        } else if (config.zone instanceof ZoneCustomUcServers) {
-          fullConfig.ucServers = config.zone.ucServers;
+        if (zone instanceof ZoneCustomDomains) {
+          fullConfig.domains = zone.domains;
+        } else if (zone instanceof ZoneCustomUcServers) {
+          fullConfig.ucServers = zone.ucServers;
         } else {
           throw new Error('Invalid zone configuration');
         }
@@ -238,16 +239,17 @@ export class Qiniu {
           "Zone must be 'auto' or an instance of ZoneCustomDomains/ZoneCustomUcServers"
         );
     }
-    if (instanceCache.has(JSON.stringify(fullConfig)) && !enforceNewInstance) {
-      this.instanceId = instanceCache.get(JSON.stringify(fullConfig))!;
+
+    this.instanceConfigKey = JSON.stringify(fullConfig);
+    if (instanceCache.has(this.instanceConfigKey) && !enforceNewInstance) {
+      this.instanceId = instanceCache.get(this.instanceConfigKey)!;
       refCounts.set(this.instanceId, (refCounts.get(this.instanceId) || 0) + 1);
     } else {
       this.instanceId = uuid.v4();
-      instanceCache.set(JSON.stringify(fullConfig), this.instanceId);
+      instanceCache.set(this.instanceConfigKey, this.instanceId);
       refCounts.set(this.instanceId, 1);
+      QiniuModule.configure(this.instanceId, fullConfig);
     }
-    this.instanceConfig = fullConfig;
-    QiniuModule.configure(this.instanceId, fullConfig);
   }
 
   /**
@@ -293,12 +295,14 @@ export class Qiniu {
    * Call this when the instance is no longer needed to free up native resources.
    */
   destroy(): void {
-    QiniuModule.destroy(this.instanceId);
     const currentCount = refCounts.get(this.instanceId) || 0;
     if (currentCount > 1) {
       refCounts.set(this.instanceId, currentCount - 1);
     } else {
-      instanceCache.delete(JSON.stringify(this.instanceConfig));
+      QiniuModule.destroy(this.instanceId);
+      if (instanceCache.get(this.instanceConfigKey) === this.instanceId) {
+        instanceCache.delete(this.instanceConfigKey);
+      }
       refCounts.delete(this.instanceId);
     }
   }
