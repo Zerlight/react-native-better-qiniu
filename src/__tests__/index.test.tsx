@@ -48,8 +48,9 @@ describe('Qiniu configuration', () => {
   it('uses AutoZone by default', () => {
     const { Qiniu } = loadLibrary();
 
-    new Qiniu();
+    const qiniu = new Qiniu();
 
+    expect(qiniu).toBeInstanceOf(Qiniu);
     expect(nativeModule.configure).toHaveBeenCalledWith('uuid-1', {
       zone: undefined,
     });
@@ -58,8 +59,9 @@ describe('Qiniu configuration', () => {
   it('passes chunkSize through to native configuration', () => {
     const { Qiniu } = loadLibrary();
 
-    new Qiniu({ zone: 'auto', chunkSize: 4 * 1024 * 1024 });
+    const qiniu = new Qiniu({ zone: 'auto', chunkSize: 4 * 1024 * 1024 });
 
+    expect(qiniu).toBeInstanceOf(Qiniu);
     expect(nativeModule.configure).toHaveBeenCalledWith('uuid-1', {
       zone: undefined,
       chunkSize: 4 * 1024 * 1024,
@@ -69,7 +71,7 @@ describe('Qiniu configuration', () => {
   it('lets advanced config override legacy top-level advanced fields', () => {
     const { Qiniu } = loadLibrary();
 
-    new Qiniu({
+    const qiniu = new Qiniu({
       zone: 'auto',
       chunkSize: 1024,
       retryMax: 1,
@@ -79,6 +81,7 @@ describe('Qiniu configuration', () => {
       },
     });
 
+    expect(qiniu).toBeInstanceOf(Qiniu);
     expect(nativeModule.configure).toHaveBeenCalledWith('uuid-1', {
       zone: undefined,
       chunkSize: 4 * 1024 * 1024,
@@ -90,17 +93,18 @@ describe('Qiniu configuration', () => {
     const { Qiniu } = loadLibrary();
     const config = { zone: 'auto' as const, enforceNewInstance: true };
 
-    new Qiniu(config);
+    const qiniu = new Qiniu(config);
 
+    expect(qiniu).toBeInstanceOf(Qiniu);
     expect(config).toEqual({ zone: 'auto', enforceNewInstance: true });
   });
 
   it('rejects invalid string zones', () => {
     const { Qiniu } = loadLibrary();
+    const createQiniuWithInvalidZone = () =>
+      Qiniu.shared({ zone: 'invalid-zone' as any });
 
-    expect(() => new Qiniu({ zone: 'invalid-zone' as any })).toThrow(
-      'Invalid zone: invalid-zone'
-    );
+    expect(createQiniuWithInvalidZone).toThrow('Invalid zone: invalid-zone');
   });
 
   it('reuses cached native instances for identical configuration', () => {
@@ -436,6 +440,41 @@ describe('Qiniu uploads', () => {
       'uuid-1',
       expect.objectContaining({
         token: 'task-token',
+      })
+    );
+  });
+
+  it('lets legacy upload use tokenProvider and return raw response', async () => {
+    const { Qiniu } = loadLibrary();
+    const tokenProvider = jest.fn(() => Promise.resolve('provided-token'));
+    const qiniu = new Qiniu({ tokenProvider });
+
+    nativeModule.upload.mockResolvedValue({
+      uploadId: 'legacy-upload',
+      key: 'legacy-key.jpg',
+      statusCode: 200,
+      response: {
+        ok: true,
+      },
+      raw: '{"ok":true}',
+    });
+
+    const result = await qiniu.upload({
+      uploadId: 'legacy-upload',
+      filePath: '/tmp/file.jpg',
+      key: 'legacy-key.jpg',
+    });
+
+    expect(result).toBe('{"ok":true}');
+    expect(tokenProvider).toHaveBeenCalledWith({
+      uploadId: 'legacy-upload',
+      filePath: '/tmp/file.jpg',
+      key: 'legacy-key.jpg',
+    });
+    expect(nativeModule.upload).toHaveBeenCalledWith(
+      'uuid-1',
+      expect.objectContaining({
+        token: 'provided-token',
       })
     );
   });
