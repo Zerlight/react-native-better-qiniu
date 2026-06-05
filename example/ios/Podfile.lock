@@ -3,7 +3,7 @@ PODS:
     - DoubleConversion
     - glog
     - hermes-engine
-    - Qiniu (~> 8.9.0)
+    - Qiniu (~> 8.9.2)
     - RCT-Folly (= 2024.11.18.00)
     - RCTRequired
     - RCTTypeSafety
@@ -35,7 +35,7 @@ PODS:
     - hermes-engine/Pre-built (= 0.79.2)
   - hermes-engine/Pre-built (0.79.2)
   - OpenSSL-Universal (3.3.3001)
-  - Qiniu (8.9.0):
+  - Qiniu (8.9.2):
     - HappyDNS (~> 1.0.4)
   - RCT-Folly (2024.11.18.00):
     - boost
@@ -1975,7 +1975,7 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon/yoga"
 
 SPEC CHECKSUMS:
-  BetterQiniu: c08e1bb76a009a493d54889de151d4ed93bfd260
+  BetterQiniu: 3fafb59947070df2058e863360115e8c78b3b9ca
   boost: 7e761d76ca2ce687f7cc98e698152abd03a18f90
   DoubleConversion: cb417026b2400c8f53ae97020b2be961b59470cb
   fast_float: 06eeec4fe712a76acc9376682e4808b05ce978b6
@@ -1985,7 +1985,7 @@ SPEC CHECKSUMS:
   HappyDNS: aefbd28cdcda93cffac64013dfe3342a2f87ed0a
   hermes-engine: 314be5250afa5692b57b4dd1705959e1973a8ebe
   OpenSSL-Universal: 6082b0bf950e5636fe0d78def171184e2b3899c2
-  Qiniu: 825f2ff8711efdd6eeda58210657434763363a02
+  Qiniu: 9a7dd4c7460d70267138a50eac15a167c0a28df0
   RCT-Folly: e78785aa9ba2ed998ea4151e314036f6c49e6d82
   RCTDeprecation: 83ffb90c23ee5cea353bd32008a7bca100908f8c
   RCTRequired: eb7c0aba998009f47a540bec9e9d69a54f68136e
