@@ -40,14 +40,19 @@ const qiniu = new Qiniu({
   putThreshold: 4 * 1024 * 1024, // Use resumable upload for files larger than 4MB
 });
 
+let activeUploadId = null;
+
 // 2. Define your upload function
 const handleUpload = async () => {
   // You must get an upload token from your server for the specific file key.
   // Never generate tokens on the client-side in a production app.
   const uploadToken = '...';
+  const uploadId = `upload-${Date.now()}`;
+  activeUploadId = uploadId;
 
   try {
     const response = await qiniu.upload({
+      uploadId,                             // A local ID used for progress and cancellation
       filePath: '/path/to/your/local/file.jpg', // A direct, URI-decoded file path
       key: `uploads/image-${Date.now()}.jpg`,   // The desired key (filename) on Qiniu
       token: uploadToken,
@@ -63,13 +68,16 @@ const handleUpload = async () => {
     
   } catch (error) {
     console.error('Upload failed or was cancelled.', error);
+  } finally {
+    activeUploadId = null;
   }
 };
 
 // 3. To cancel an ongoing upload
 const handleCancel = () => {
-  // Use the same key that was passed to the upload method
-  qiniu.cancel(`uploads/image-${Date.now()}.jpg`);
+  if (activeUploadId) {
+    qiniu.cancel(activeUploadId);
+  }
 };
 ```
 
@@ -118,14 +126,15 @@ Uploads a file using the instance's configuration. Returns a `Promise` that reso
 
 | Property | Type | Required | Description |
 | --- | --- | --- | --- |
+| `uploadId` | `string` | Yes | A local identifier for this upload task. Use it to match progress events and cancel this specific upload. |
 | `filePath` | `string` | Yes | The absolute local file path. **Note:** Must be a raw path, not a `file://` URI. Decode URI-encoded paths before passing. |
 | `key` | `string` | Yes | The destination key (filename) for the file in your Qiniu bucket. |
 | `token` | `string` | Yes | A valid upload token generated from your server. |
 | `onProgress` | `(event: UploadProgressEvent) => void` | No | A callback function that receives progress updates for the upload. |
 
-### `qiniu.cancel(key: string)`
+### `qiniu.cancel(uploadId: string)`
 
-Cancels an ongoing upload for a specific `key`.
+Cancels an ongoing upload for a specific local `uploadId`.
 
 ### `qiniu.destroy()`
 
@@ -155,6 +164,7 @@ const qiniu2 = new Qiniu({ zone: ucZone });
 
 | Property | Type | Description |
 | --- | --- | --- |
+| `uploadId` | `string` | The local identifier of the upload task. |
 | `key` | `string` | The key of the file being uploaded. |
 | `percent` | `number` | The upload progress percentage (0 to 1). |
 

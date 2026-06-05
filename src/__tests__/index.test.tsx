@@ -96,3 +96,75 @@ describe('Qiniu configuration', () => {
     expect(nativeModule.destroy).toHaveBeenCalledWith('uuid-1');
   });
 });
+
+describe('Qiniu uploads', () => {
+  it('filters progress events by uploadId', async () => {
+    const { Qiniu } = loadLibrary();
+    const remove = jest.fn();
+    const onProgress = jest.fn();
+    let resolveUpload: (value: string) => void = () => {};
+    let progressHandler:
+      | ((event: { uploadId: string; key: string; percent: number }) => void)
+      | undefined;
+
+    nativeModule.onQNUpProgressed.mockImplementation((handler) => {
+      progressHandler = handler;
+      return { remove };
+    });
+    nativeModule.upload.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveUpload = resolve;
+        })
+    );
+
+    const qiniu = new Qiniu();
+    const uploadPromise = qiniu.upload({
+      uploadId: 'upload-1',
+      filePath: '/tmp/file.jpg',
+      key: 'same-key.jpg',
+      token: 'token',
+      onProgress,
+    });
+
+    progressHandler?.({
+      uploadId: 'upload-2',
+      key: 'same-key.jpg',
+      percent: 0.25,
+    });
+    progressHandler?.({
+      uploadId: 'upload-1',
+      key: 'same-key.jpg',
+      percent: 0.5,
+    });
+
+    resolveUpload('{"ok":true}');
+    const result = await uploadPromise;
+
+    expect(result).toBe('{"ok":true}');
+    expect(nativeModule.upload).toHaveBeenCalledWith(
+      'uuid-1',
+      expect.objectContaining({
+        uploadId: 'upload-1',
+        key: 'same-key.jpg',
+        hasProgressListener: true,
+      })
+    );
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith({
+      uploadId: 'upload-1',
+      key: 'same-key.jpg',
+      percent: 0.5,
+    });
+    expect(remove).toHaveBeenCalled();
+  });
+
+  it('cancels by uploadId', () => {
+    const { Qiniu } = loadLibrary();
+    const qiniu = new Qiniu();
+
+    qiniu.cancel('upload-1');
+
+    expect(nativeModule.cancel).toHaveBeenCalledWith('upload-1');
+  });
+});

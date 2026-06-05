@@ -178,6 +178,7 @@ export default function App() {
     console.log('Uploading file:', filePath);
     qiniu
       .upload({
+        uploadId: TEST_FILE_NAME,
         filePath,
         key: 'testfile.dummy',
         token: uploadToken,

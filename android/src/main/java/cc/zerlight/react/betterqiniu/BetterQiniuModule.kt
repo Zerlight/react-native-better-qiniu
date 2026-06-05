@@ -148,6 +148,12 @@ class BetterQiniuModule(reactContext: ReactApplicationContext) : NativeBetterQin
                             promise.reject("INVALID_OPTIONS", "Insufficient options.")
                             return
                         }
+        val uploadId =
+                options.getString("uploadId")
+                        ?: run {
+                            promise.reject("INVALID_OPTIONS", "Insufficient options.")
+                            return
+                        }
         val token =
                 options.getString("token")
                         ?: run {
@@ -162,11 +168,11 @@ class BetterQiniuModule(reactContext: ReactApplicationContext) : NativeBetterQin
                         }
         val hasProgressListener = options.getBoolean("hasProgressListener")
         val cancellationSignal = CancellationSignal()
-        cancellationSignals[key] = cancellationSignal
+        cancellationSignals[uploadId] = cancellationSignal
 
         val completionHandler: (String?, ResponseInfo?, JSONObject?) -> Unit =
                 { _, info, response ->
-                    cancellationSignals.remove(key)
+                    cancellationSignals.remove(uploadId)
                     if (info?.isOK == true) {
                         promise.resolve(response?.toString() ?: "{}")
                     } else {
@@ -177,6 +183,7 @@ class BetterQiniuModule(reactContext: ReactApplicationContext) : NativeBetterQin
         val progressHandler: (String?, Double) -> Unit = { progressKey, percent ->
             val eventParams =
                     Arguments.createMap().apply {
+                        putString("uploadId", uploadId)
                         putString("key", progressKey)
                         putDouble("percent", percent)
                     }
@@ -190,9 +197,9 @@ class BetterQiniuModule(reactContext: ReactApplicationContext) : NativeBetterQin
         uploadManager.put(filePath, key, token, completionHandler, uploadOptions)
     }
 
-    override fun cancel(key: String) {
-        cancellationSignals[key]?.cancel()
-        cancellationSignals.remove(key)
+    override fun cancel(uploadId: String) {
+        cancellationSignals[uploadId]?.cancel()
+        cancellationSignals.remove(uploadId)
     }
 
     override fun destroy(instanceId: String) {

@@ -112,28 +112,29 @@ RCT_EXPORT_MODULE();
   }
   
   NSString *key = options[@"key"];
+  NSString *uploadId = options[@"uploadId"];
   NSString *token = options[@"token"];
   NSString *filePath = options[@"filePath"];
   
-  if (!key || !token || !filePath) {
+  if (!key || !uploadId || !token || !filePath) {
     reject(@"INVALID_OPTIONS", @"Insufficient options.", nil);
     return;
   }
   
   @synchronized(cancellationFlags) {
-    cancellationFlags[key] = @(NO);
+    cancellationFlags[uploadId] = @(NO);
   }
   QNUpCancellationSignal cancellationSignal = ^BOOL() {
     BOOL isCancelled = NO;
     @synchronized(self->cancellationFlags) {
-      isCancelled = [self->cancellationFlags[key] boolValue];
+      isCancelled = [self->cancellationFlags[uploadId] boolValue];
     }
     return isCancelled;
   };
   
   QNUpProgressHandler progressHandler = ^(NSString *progressKey, float percent) {
     if (hasProgressListener) {
-      [self emitOnQNUpProgressed:@{@"key": progressKey, @"percent": @(percent)}];
+      [self emitOnQNUpProgressed:@{@"uploadId": uploadId, @"key": progressKey, @"percent": @(percent)}];
     }
   };
   
@@ -145,7 +146,7 @@ RCT_EXPORT_MODULE();
   
   [upManager putFile:filePath key:key token:token complete:^(QNResponseInfo *info, NSString *respKey, NSDictionary *resp) {
     @synchronized(self->cancellationFlags) {
-      [self->cancellationFlags removeObjectForKey:key];
+      [self->cancellationFlags removeObjectForKey:uploadId];
     }
     if (info && info.isOK) {
       if (resp) {
@@ -162,11 +163,11 @@ RCT_EXPORT_MODULE();
   } option:uploadOption];
 }
 
-- (void)cancel:(NSString *)key
+- (void)cancel:(NSString *)uploadId
 {
-  if (key) {
+  if (uploadId) {
     @synchronized(cancellationFlags) {
-      cancellationFlags[key] = @(YES);
+      cancellationFlags[uploadId] = @(YES);
     }
   }
 }

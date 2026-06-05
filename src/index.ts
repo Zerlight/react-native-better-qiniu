@@ -12,7 +12,7 @@ const LINKING_ERROR =
 interface QiniuNativeModule {
   configure(instanceId: string, options: QiniuFullConfig): void;
   upload(instanceId: string, options: UploadOptions): Promise<any>;
-  cancel(key: string): void;
+  cancel(uploadId: string): void;
   destroy(instanceId: string): void;
 
   readonly onQNUpProgressed: EventEmitter<UploadProgressEvent>;
@@ -175,6 +175,7 @@ export class ZoneCustomUcServers {
 }
 
 export interface UploadProgressEvent {
+  uploadId: string;
   key: string;
   /**
    * The current upload progress as a percentage.
@@ -184,6 +185,11 @@ export interface UploadProgressEvent {
 }
 
 export interface UploadOptions {
+  /**
+   * A local identifier for this upload task. Use this value to filter progress
+   * and cancel the task, especially when multiple uploads use the same Qiniu key.
+   */
+  uploadId: string;
   /**
    * The local file path to upload.
    *
@@ -269,7 +275,7 @@ export class Qiniu {
     if (options.onProgress) {
       progressSubscription = QiniuModule.onQNUpProgressed(
         (event: UploadProgressEvent) => {
-          if (event.key === options.key) {
+          if (event.uploadId === options.uploadId) {
             options.onProgress?.(event);
           }
         }
@@ -283,11 +289,11 @@ export class Qiniu {
 
   /**
    * Cancels an ongoing upload. This is a static method as cancellation
-   * is tied to the upload `key`, not the configuration instance.
-   * @param key The unique key of the file upload to cancel.
+   * is tied to the upload ID, not the configuration instance.
+   * @param uploadId The unique local ID of the upload to cancel.
    */
-  cancel(key: string): void {
-    QiniuModule.cancel(key);
+  cancel(uploadId: string): void {
+    QiniuModule.cancel(uploadId);
   }
 
   /**

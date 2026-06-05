@@ -3,6 +3,7 @@ import { TurboModuleRegistry } from 'react-native';
 import type { EventEmitter } from 'react-native/Libraries/Types/CodegenTypes';
 
 interface UploadProgressEvent {
+  uploadId: string;
   key: string;
   percent: number;
 }
@@ -10,7 +11,7 @@ interface UploadProgressEvent {
 export interface Spec extends TurboModule {
   configure(instanceId: string, options: Object): void;
   upload(instanceId: string, options: Object): Promise<Object>;
-  cancel(key: string): void;
+  cancel(uploadId: string): void;
   destroy(instanceId: string): void;
 
   readonly onQNUpProgressed: EventEmitter<UploadProgressEvent>;
