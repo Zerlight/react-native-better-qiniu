@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Text,
   View,
@@ -45,14 +45,24 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading, setIsUploading] = useState(false);
+  const currentUploadIdRef = useRef<string | null>(null);
 
-  // Initialize Qiniu instance
-  const qiniu = new Qiniu({
-    zone: 'auto',
-    resumeUploadVersion: 'v2',
-    useConcurrentResumeUpload: true,
-    putThreshold: 4 * 1024 * 1024, // 4MB
-  });
+  const qiniu = useMemo(
+    () =>
+      new Qiniu({
+        zone: 'auto',
+        resumeUploadVersion: 'v2',
+        useConcurrentResumeUpload: true,
+        putThreshold: 4 * 1024 * 1024, // 4MB
+      }),
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      qiniu.destroy();
+    };
+  }, [qiniu]);
 
   const requestStoragePermission = async () => {
     if (Platform.OS !== 'android') {
@@ -175,10 +185,12 @@ export default function App() {
       return;
     }
     // Upload file
+    const uploadId = `${TEST_FILE_NAME}-${Date.now()}`;
+    currentUploadIdRef.current = uploadId;
     console.log('Uploading file:', filePath);
     qiniu
       .upload({
-        uploadId: TEST_FILE_NAME,
+        uploadId,
         filePath,
         key: 'testfile.dummy',
         token: uploadToken,
@@ -190,20 +202,28 @@ export default function App() {
       .then((response) => {
         setUploadProgress(100);
         setResult(JSON.stringify(response));
-        setIsUploading(false);
         setError(null);
         console.log('Upload complete!', response);
       })
       .catch((err) => {
-        setIsUploading(false);
         setError(err.message);
         console.error('Upload failed or was cancelled.', err);
+      })
+      .finally(() => {
+        if (currentUploadIdRef.current === uploadId) {
+          currentUploadIdRef.current = null;
+        }
+        setIsUploading(false);
       });
   };
 
   const handleCancelUpload = () => {
     console.log('Cancelling upload...');
-    qiniu.cancel('testfile.dummy');
+    const uploadId = currentUploadIdRef.current;
+    if (uploadId) {
+      qiniu.cancel(uploadId);
+      currentUploadIdRef.current = null;
+    }
     setIsUploading(false);
     setUploadProgress(0);
   };
