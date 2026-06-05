@@ -291,9 +291,106 @@ describe('Qiniu uploads', () => {
     const result = await promise2;
 
     expect(promise2).toBe(promise1);
-    expect(result).toBe('{"ok":true}');
+    expect(result.raw).toBe('{"ok":true}');
     expect(task.status).toBe('success');
     expect(nativeModule.upload).toHaveBeenCalledTimes(1);
+  });
+
+  it('normalizes structured native upload results', async () => {
+    const { Qiniu } = loadLibrary();
+    const qiniu = new Qiniu();
+    const task = qiniu.createUploadTask({
+      uploadId: 'upload-1',
+      filePath: '/tmp/file.jpg',
+      key: 'same-key.jpg',
+      token: 'token',
+    });
+    nativeModule.upload.mockResolvedValue({
+      uploadId: 'upload-1',
+      key: 'same-key.jpg',
+      statusCode: 200,
+      requestId: 'req-1',
+      host: 'up.qiniu.com',
+      response: {
+        hash: 'hash-value',
+        fsize: 123,
+        bucket: 'bucket-name',
+      },
+      raw: '{"hash":"hash-value","fsize":123,"bucket":"bucket-name"}',
+    });
+
+    const result = await task.start();
+
+    expect(result).toEqual({
+      uploadId: 'upload-1',
+      key: 'same-key.jpg',
+      statusCode: 200,
+      requestId: 'req-1',
+      host: 'up.qiniu.com',
+      hash: 'hash-value',
+      fsize: 123,
+      bucket: 'bucket-name',
+      response: {
+        hash: 'hash-value',
+        fsize: 123,
+        bucket: 'bucket-name',
+      },
+      raw: '{"hash":"hash-value","fsize":123,"bucket":"bucket-name"}',
+    });
+  });
+
+  it('normalizes native upload errors', async () => {
+    const { Qiniu } = loadLibrary();
+    const qiniu = new Qiniu();
+    const task = qiniu.createUploadTask({
+      uploadId: 'upload-1',
+      filePath: '/tmp/file.jpg',
+      key: 'same-key.jpg',
+      token: 'token',
+    });
+    const nativeError = Object.assign(new Error('file exists'), {
+      code: 'UPLOAD_ERROR',
+      statusCode: 614,
+      requestId: 'req-1',
+      raw: '{"error":"file exists"}',
+    });
+    nativeModule.upload.mockRejectedValue(nativeError);
+
+    await expect(task.start()).rejects.toMatchObject({
+      name: 'QiniuUploadError',
+      code: 'UPLOAD_ERROR',
+      message: 'file exists',
+      statusCode: 614,
+      requestId: 'req-1',
+      isCancelled: false,
+      raw: '{"error":"file exists"}',
+    });
+    expect(task.status).toBe('error');
+  });
+
+  it('marks native cancellation errors as cancelled', async () => {
+    const { Qiniu } = loadLibrary();
+    const qiniu = new Qiniu();
+    const task = qiniu.createUploadTask({
+      uploadId: 'upload-1',
+      filePath: '/tmp/file.jpg',
+      key: 'same-key.jpg',
+      token: 'token',
+    });
+    const nativeError = Object.assign(new Error('cancelled by user'), {
+      code: 'UPLOAD_CANCELLED',
+      statusCode: -2,
+      isCancelled: true,
+    });
+    nativeModule.upload.mockRejectedValue(nativeError);
+
+    await expect(task.start()).rejects.toMatchObject({
+      name: 'QiniuUploadError',
+      code: 'UPLOAD_CANCELLED',
+      statusCode: -2,
+      isCancelled: true,
+    });
+    expect(task.status).toBe('cancelled');
   });
 
   it('uses tokenProvider when task options omit token', async () => {
@@ -352,7 +449,11 @@ describe('Qiniu uploads', () => {
       key: 'same-key.jpg',
     });
 
-    await expect(task.start()).rejects.toThrow('TOKEN_MISSING');
+    await expect(task.start()).rejects.toMatchObject({
+      name: 'QiniuUploadError',
+      code: 'TOKEN_MISSING',
+      isCancelled: false,
+    });
     expect(nativeModule.upload).not.toHaveBeenCalled();
   });
 

@@ -97,6 +97,53 @@ RCT_EXPORT_MODULE();
   }
 }
 
+- (NSString *)jsonStringFromDictionary:(NSDictionary *)dictionary
+{
+  if (!dictionary) {
+    return @"{}";
+  }
+  
+  NSData *jsonData = [NSJSONSerialization dataWithJSONObject:dictionary options:0 error:nil];
+  NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+  return jsonString ?: @"{}";
+}
+
+- (NSDictionary *)uploadResultForUploadId:(NSString *)uploadId
+                                      key:(NSString *)key
+                                     info:(QNResponseInfo *)info
+                                 response:(NSDictionary *)response
+{
+  NSMutableDictionary *result = [NSMutableDictionary new];
+  NSDictionary *responseBody = response ?: @{};
+  result[@"uploadId"] = uploadId ?: @"";
+  result[@"key"] = key ?: @"";
+  result[@"statusCode"] = @(info ? info.statusCode : 0);
+  result[@"response"] = responseBody;
+  result[@"raw"] = [self jsonStringFromDictionary:responseBody];
+  result[@"isCancelled"] = @(info ? info.isCancelled : NO);
+  
+  if (info.reqId) {
+    result[@"requestId"] = info.reqId;
+    result[@"reqId"] = info.reqId;
+  }
+  if (info.xlog) {
+    result[@"xlog"] = info.xlog;
+  }
+  if (info.xvia) {
+    result[@"xvia"] = info.xvia;
+  }
+  if (info.host) {
+    result[@"host"] = info.host;
+  }
+  if (info.error.localizedDescription) {
+    result[@"error"] = info.error.localizedDescription;
+  } else if (info.message && !info.isOK) {
+    result[@"error"] = info.message;
+  }
+  
+  return result;
+}
+
 - (void)upload:(nonnull NSString *)instanceId options:(nonnull NSDictionary *)options resolve:(nonnull RCTPromiseResolveBlock)resolve reject:(nonnull RCTPromiseRejectBlock)reject
 {
   QNUploadManager *upManager;
@@ -148,17 +195,16 @@ RCT_EXPORT_MODULE();
     @synchronized(self->cancellationFlags) {
       [self->cancellationFlags removeObjectForKey:uploadId];
     }
+    NSDictionary *uploadResult = [self uploadResultForUploadId:uploadId key:key info:info response:resp];
     if (info && info.isOK) {
-      if (resp) {
-        NSData *jsonData = [NSJSONSerialization dataWithJSONObject:resp options:0 error:nil];
-        NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
-        resolve(jsonString ?: @"{}");
-      } else {
-        resolve(@"{}");
-      }
+      resolve(uploadResult);
     } else {
-      NSString *errorDescription = info ? info.description : @"An unknown error occurred.";
-      reject(@"UPLOAD_ERROR", errorDescription, nil);
+      NSString *code = (info && info.isCancelled) ? @"UPLOAD_CANCELLED" : @"UPLOAD_ERROR";
+      NSString *errorDescription = info.message ?: info.description ?: @"An unknown error occurred.";
+      NSError *error = [NSError errorWithDomain:@"BetterQiniu"
+                                           code:(info ? info.statusCode : 0)
+                                       userInfo:uploadResult];
+      reject(code, errorDescription, error);
     }
   } option:uploadOption];
 }

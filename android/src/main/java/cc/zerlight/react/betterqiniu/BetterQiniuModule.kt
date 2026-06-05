@@ -4,6 +4,7 @@ import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReadableMap
+import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.module.annotations.ReactModule
 import com.facebook.react.modules.core.DeviceEventManagerModule
@@ -18,6 +19,7 @@ import com.qiniu.android.storage.UploadOptions
 import com.qiniu.android.utils.Utils
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import org.json.JSONArray
 import org.json.JSONObject
 
 @ReactModule(name = BetterQiniuModule.NAME)
@@ -132,6 +134,75 @@ class BetterQiniuModule(reactContext: ReactApplicationContext) : NativeBetterQin
         override fun isCancelled(): Boolean = isCancelled
     }
 
+    private fun createUploadResult(
+            uploadId: String,
+            key: String,
+            info: ResponseInfo?,
+            response: JSONObject?
+    ): WritableMap {
+        val raw = response?.toString() ?: "{}"
+        return Arguments.createMap().apply {
+            putString("uploadId", uploadId)
+            putString("key", key)
+            putInt("statusCode", info?.statusCode ?: 0)
+            putString("requestId", info?.reqId)
+            putString("reqId", info?.reqId)
+            putString("xlog", info?.xlog)
+            putString("xvia", info?.xvia)
+            putString("host", info?.host)
+            putString("error", info?.error)
+            putBoolean("isCancelled", info?.isCancelled ?: false)
+            putMap("response", jsonObjectToWritableMap(response))
+            putString("raw", raw)
+        }
+    }
+
+    private fun jsonObjectToWritableMap(jsonObject: JSONObject?): WritableMap {
+        val map = Arguments.createMap()
+        if (jsonObject == null) {
+            return map
+        }
+
+        val keys = jsonObject.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            putJsonValue(map, key, jsonObject.opt(key))
+        }
+        return map
+    }
+
+    private fun jsonArrayToWritableArray(jsonArray: JSONArray): WritableArray {
+        val array = Arguments.createArray()
+        for (index in 0 until jsonArray.length()) {
+            when (val value = jsonArray.opt(index)) {
+                null, JSONObject.NULL -> array.pushNull()
+                is JSONObject -> array.pushMap(jsonObjectToWritableMap(value))
+                is JSONArray -> array.pushArray(jsonArrayToWritableArray(value))
+                is Boolean -> array.pushBoolean(value)
+                is Int -> array.pushInt(value)
+                is Long -> array.pushDouble(value.toDouble())
+                is Float -> array.pushDouble(value.toDouble())
+                is Double -> array.pushDouble(value)
+                else -> array.pushString(value.toString())
+            }
+        }
+        return array
+    }
+
+    private fun putJsonValue(map: WritableMap, key: String, value: Any?) {
+        when (value) {
+            null, JSONObject.NULL -> map.putNull(key)
+            is JSONObject -> map.putMap(key, jsonObjectToWritableMap(value))
+            is JSONArray -> map.putArray(key, jsonArrayToWritableArray(value))
+            is Boolean -> map.putBoolean(key, value)
+            is Int -> map.putInt(key, value)
+            is Long -> map.putDouble(key, value.toDouble())
+            is Float -> map.putDouble(key, value.toDouble())
+            is Double -> map.putDouble(key, value)
+            else -> map.putString(key, value.toString())
+        }
+    }
+
     override fun upload(instanceId: String, options: ReadableMap, promise: Promise) {
         val uploadManager =
                 uploadManagers[instanceId]
@@ -173,10 +244,18 @@ class BetterQiniuModule(reactContext: ReactApplicationContext) : NativeBetterQin
         val completionHandler: (String?, ResponseInfo?, JSONObject?) -> Unit =
                 { _, info, response ->
                     cancellationSignals.remove(uploadId)
+                    val uploadResult = createUploadResult(uploadId, key, info, response)
                     if (info?.isOK == true) {
-                        promise.resolve(response?.toString() ?: "{}")
+                        promise.resolve(uploadResult)
                     } else {
-                        promise.reject("UPLOAD_ERROR", info?.toString())
+                        val code =
+                                if (info?.isCancelled == true) "UPLOAD_CANCELLED"
+                                else "UPLOAD_ERROR"
+                        val message =
+                                info?.error
+                                        ?: info?.toString()
+                                        ?: "An unknown error occurred."
+                        promise.reject(code, message, uploadResult)
                     }
                 }
 

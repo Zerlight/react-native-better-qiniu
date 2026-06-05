@@ -10,7 +10,10 @@ const LINKING_ERROR =
 
 interface QiniuNativeModule {
   configure(instanceId: string, options: QiniuFullConfig): void;
-  upload(instanceId: string, options: NativeUploadOptions): Promise<any>;
+  upload(
+    instanceId: string,
+    options: NativeUploadOptions
+  ): Promise<NativeUploadResult | string>;
   cancel(uploadId: string): void;
   destroy(instanceId: string): void;
 
@@ -146,6 +149,31 @@ const compactConfig = <T extends object>(config: T) => {
   ) as Partial<T>;
 };
 
+const readString = (value: unknown): string | undefined => {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+};
+
+const readNumber = (value: unknown): number | undefined => {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value
+    : undefined;
+};
+
+const readBoolean = (value: unknown): boolean | undefined => {
+  return typeof value === 'boolean' ? value : undefined;
+};
+
+const parseJsonObject = (raw: string): Record<string, unknown> => {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+};
+
 /**
  * Represents the predefined regions for Qiniu upload zones.
  * This is not recommended. Only for development or testing purposes.
@@ -231,6 +259,103 @@ export interface UploadProgressEvent {
   percent: number;
 }
 
+export interface UploadResult {
+  uploadId: string;
+  key: string;
+  statusCode: number;
+  requestId?: string;
+  host?: string;
+  hash?: string;
+  fsize?: number;
+  bucket?: string;
+  response: Record<string, unknown>;
+  raw: string;
+}
+
+interface NativeUploadResult {
+  uploadId?: string;
+  key?: string;
+  statusCode?: number;
+  requestId?: string;
+  reqId?: string;
+  host?: string;
+  hash?: string;
+  fsize?: number;
+  bucket?: string;
+  response?: Record<string, unknown>;
+  raw?: string;
+  error?: string;
+  isCancelled?: boolean;
+}
+
+export interface QiniuUploadErrorOptions {
+  code: string;
+  message: string;
+  statusCode?: number;
+  requestId?: string;
+  isCancelled?: boolean;
+  raw?: unknown;
+}
+
+export class QiniuUploadError extends Error {
+  readonly code: string;
+  readonly statusCode?: number;
+  readonly requestId?: string;
+  readonly isCancelled: boolean;
+  readonly raw?: unknown;
+
+  constructor(options: QiniuUploadErrorOptions) {
+    super(options.message);
+    this.name = 'QiniuUploadError';
+    this.code = options.code;
+    this.statusCode = options.statusCode;
+    this.requestId = options.requestId;
+    this.isCancelled = options.isCancelled ?? false;
+    this.raw = options.raw;
+  }
+
+  static from(error: unknown, fallbackCode = 'UPLOAD_ERROR'): QiniuUploadError {
+    if (error instanceof QiniuUploadError) {
+      return error;
+    }
+
+    const errorRecord =
+      typeof error === 'object' && error !== null
+        ? (error as Record<string, unknown>)
+        : {};
+    const userInfo =
+      typeof errorRecord.userInfo === 'object' && errorRecord.userInfo !== null
+        ? (errorRecord.userInfo as Record<string, unknown>)
+        : {};
+    const statusCode = readNumber(
+      errorRecord.statusCode ?? userInfo.statusCode
+    );
+    const requestId = readString(
+      errorRecord.requestId ??
+        errorRecord.reqId ??
+        userInfo.requestId ??
+        userInfo.reqId
+    );
+    const isCancelled =
+      readBoolean(errorRecord.isCancelled ?? userInfo.isCancelled) ?? false;
+    const code = isCancelled
+      ? 'UPLOAD_CANCELLED'
+      : (readString(errorRecord.code ?? userInfo.code) ?? fallbackCode);
+    const message =
+      readString(errorRecord.message ?? userInfo.message ?? userInfo.error) ??
+      'Upload failed.';
+
+    return new QiniuUploadError({
+      code,
+      message,
+      statusCode,
+      requestId,
+      isCancelled,
+      raw: userInfo.raw ?? errorRecord.raw ?? error,
+    });
+  }
+}
+
 export type UploadTaskStatus =
   | 'idle'
   | 'uploading'
@@ -238,9 +363,7 @@ export type UploadTaskStatus =
   | 'error'
   | 'cancelled';
 
-export type UploadProgressListener = (
-  event: UploadProgressEvent
-) => void;
+export type UploadProgressListener = (event: UploadProgressEvent) => void;
 
 export interface UploadTaskSubscription {
   remove(): void;
@@ -261,7 +384,7 @@ export interface UploadOptions {
    *
    * @example
    * decodeURIComponent('file:///var/%E5%A4%A2'.replace('file://', ''));
-  */
+   */
   filePath: string;
   key: string;
   token?: string;
@@ -283,7 +406,7 @@ export class UploadTask {
   private readonly qiniu: Qiniu;
   private readonly options: Omit<UploadOptions, 'uploadId' | 'onProgress'>;
   private readonly listeners = new Set<UploadProgressListener>();
-  private uploadPromise: Promise<any> | null = null;
+  private uploadPromise: Promise<UploadResult> | null = null;
 
   status: UploadTaskStatus = 'idle';
 
@@ -312,7 +435,7 @@ export class UploadTask {
     };
   }
 
-  start(): Promise<any> {
+  start(): Promise<UploadResult> {
     if (this.uploadPromise) {
       return this.uploadPromise;
     }
@@ -328,11 +451,14 @@ export class UploadTask {
         this.status = 'success';
         return result;
       })
-      .catch((error) => {
-        if (this.status !== 'cancelled') {
+      .catch((error: unknown) => {
+        const uploadError = QiniuUploadError.from(error);
+        if (uploadError.isCancelled) {
+          this.status = 'cancelled';
+        } else if (this.status !== 'cancelled') {
           this.status = 'error';
         }
-        throw error;
+        throw uploadError;
       });
 
     return this.uploadPromise;
@@ -464,7 +590,9 @@ export class Qiniu {
    * progress, cancellation, and status.
    */
   upload(options: UploadOptions): Promise<any> {
-    return this.createUploadTask(options).start();
+    return this.createUploadTask(options)
+      .start()
+      .then((result) => result.raw);
   }
 
   createUploadTask(options: UploadOptions): UploadTask {
@@ -475,7 +603,7 @@ export class Qiniu {
     task: UploadTask,
     options: Omit<UploadOptions, 'uploadId' | 'onProgress'>,
     onProgress: UploadProgressListener
-  ): Promise<any> {
+  ): Promise<UploadResult> {
     const progressSubscription = QiniuModule.onQNUpProgressed(
       (event: UploadProgressEvent) => {
         if (event.uploadId === task.uploadId) {
@@ -494,7 +622,9 @@ export class Qiniu {
           hasProgressListener: true,
         };
 
-        return QiniuModule.upload(this.instanceId, nativeOptions);
+        return QiniuModule.upload(this.instanceId, nativeOptions).then(
+          (result) => this.normalizeUploadResult(result, task)
+        );
       })
       .finally(() => {
         progressSubscription.remove();
@@ -517,7 +647,54 @@ export class Qiniu {
       });
     }
 
-    throw new Error('TOKEN_MISSING');
+    throw new QiniuUploadError({
+      code: 'TOKEN_MISSING',
+      message:
+        'Upload token is required. Pass options.token or configure tokenProvider.',
+      isCancelled: false,
+    });
+  }
+
+  private normalizeUploadResult(
+    result: NativeUploadResult | string,
+    task: UploadTask
+  ): UploadResult {
+    if (typeof result === 'string') {
+      const response = parseJsonObject(result);
+      return this.createUploadResult({
+        uploadId: task.uploadId,
+        key: task.key,
+        statusCode: 0,
+        response,
+        raw: result,
+      });
+    }
+
+    const raw =
+      result.raw ?? (result.response ? JSON.stringify(result.response) : '{}');
+    const response =
+      result.response && typeof result.response === 'object'
+        ? result.response
+        : parseJsonObject(raw);
+
+    return this.createUploadResult({
+      uploadId: result.uploadId ?? task.uploadId,
+      key: result.key ?? task.key,
+      statusCode: result.statusCode ?? 0,
+      requestId: result.requestId ?? result.reqId,
+      host: result.host,
+      response,
+      raw,
+    });
+  }
+
+  private createUploadResult(result: UploadResult): UploadResult {
+    return {
+      ...result,
+      hash: readString(result.response.hash),
+      fsize: readNumber(result.response.fsize),
+      bucket: readString(result.response.bucket),
+    };
   }
 
   /**
