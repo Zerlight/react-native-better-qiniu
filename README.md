@@ -27,57 +27,54 @@ cd ios && pod install
 
 ## Usage
 
-Here is a basic example of how to initialize the client and upload a file.
+Here is a basic example of how to initialize the client and upload a file with the task API.
 
 ```javascript
-import { Qiniu } from 'react-native-better-qiniu';
+import { Qiniu, QiniuUploadError } from 'react-native-better-qiniu';
 
-// 1. Initialize a Qiniu client instance with your desired configuration.
-// It's recommended to create and reuse a single instance for the same configuration.
-const qiniu = new Qiniu({
+const qiniu = Qiniu.shared({
   zone: 'auto', // Automatically select the best upload zone
-  useConcurrentResumeUpload: true, // Enable concurrent block uploads for faster resumable uploads
+  useConcurrentResumeUpload: true,
   putThreshold: 4 * 1024 * 1024, // Use resumable upload for files larger than 4MB
+  tokenProvider: async ({ key }) => {
+    // Fetch an upload token from your server. Never generate tokens in the app.
+    const response = await fetch(`/upload-token?key=${encodeURIComponent(key)}`);
+    const { token } = await response.json();
+    return token;
+  },
 });
 
-let activeUploadId = null;
+let activeTask = null;
 
-// 2. Define your upload function
 const handleUpload = async () => {
-  // You must get an upload token from your server for the specific file key.
-  // Never generate tokens on the client-side in a production app.
-  const uploadToken = '...';
-  const uploadId = `upload-${Date.now()}`;
-  activeUploadId = uploadId;
+  const task = qiniu.createUploadTask({
+    filePath: '/path/to/your/local/file.jpg', // A direct, URI-decoded file path
+    key: `uploads/image-${Date.now()}.jpg`,
+  });
+  activeTask = task;
+
+  const subscription = task.onProgress((event) => {
+    const percent = Math.round(event.percent * 100);
+    console.log(`Upload Progress: ${percent}%`);
+  });
 
   try {
-    const response = await qiniu.upload({
-      uploadId,                             // A local ID used for progress and cancellation
-      filePath: '/path/to/your/local/file.jpg', // A direct, URI-decoded file path
-      key: `uploads/image-${Date.now()}.jpg`,   // The desired key (filename) on Qiniu
-      token: uploadToken,
-      onProgress: (event) => {
-        const percent = Math.round(event.percent * 100);
-        console.log(`Upload Progress: ${percent}%`);
-      },
-    });
-
-    console.log('Upload successful!', response);
-    // The response is a JSON string from Qiniu, you may need to parse it.
-    // e.g., const parsedResponse = JSON.parse(response);
-    
+    const result = await task.start();
+    console.log('Upload successful!', result.hash, result.raw);
   } catch (error) {
-    console.error('Upload failed or was cancelled.', error);
+    if (error instanceof QiniuUploadError && error.isCancelled) {
+      console.log('Upload cancelled');
+    } else {
+      console.error('Upload failed.', error);
+    }
   } finally {
-    activeUploadId = null;
+    subscription.remove();
+    activeTask = null;
   }
 };
 
-// 3. To cancel an ongoing upload
 const handleCancel = () => {
-  if (activeUploadId) {
-    qiniu.cancel(activeUploadId);
-  }
+  activeTask?.cancel();
 };
 ```
 
@@ -95,13 +92,19 @@ To run the example app, please follow the instructions in `example/README.md`.
 
 ## API Reference
 
+### `Qiniu.shared(config: QiniuConfig)`
+
+Creates a JS client and reuses a cached native upload manager for identical native configuration.
+
+### `Qiniu.create(config: QiniuConfig)`
+
+Creates a JS client with a new native upload manager, even when the native configuration matches an existing shared instance.
+
 ### `new Qiniu(config: QiniuConfig)`
 
-Creates and configures a new Qiniu client instance. The library automatically caches instances based on their configuration. If you create a new instance with the exact same configuration, the library will reuse the existing native instance to save resources.
+Deprecated compatibility constructor. Prefer `Qiniu.shared(config)` or `Qiniu.create(config)` so lifecycle intent is explicit.
 
 #### `QiniuConfig` (Interface)
-
-`QiniuConfig` is basically a mirror of Qiniu SDK's available configurations. For more detailed descriptions, please go to their official documents.
 
 | Property | Type | Description |
 | --- | --- | --- |
@@ -109,36 +112,86 @@ Creates and configures a new Qiniu client instance. The library automatically ca
 | `putThreshold` | `number` | The file size threshold in bytes for triggering resumable (chunked) upload. |
 | `useConcurrentResumeUpload` | `boolean` | Enables concurrent uploading of multiple chunks for faster resumable uploads. |
 | `resumeUploadVersion` | `'v1'` \| `'v2'` | Specifies the version of the resumable upload protocol. |
+| `useHttps` | `boolean` | Whether to use HTTPS for uploads. |
+| `tokenProvider` | `(input) => string \| Promise<string>` | Returns an upload token for a task when the task options do not include `token`. |
+| `advanced` | `QiniuAdvancedConfig` | Less common SDK-builder options. |
+
+Legacy top-level advanced fields such as `chunkSize`, `retryMax`, and `timeoutInterval` are still accepted but deprecated. When both are present, `advanced` wins.
+
+#### `QiniuAdvancedConfig` (Interface)
+
+| Property | Type | Description |
+| --- | --- | --- |
 | `accelerateUploading` | `boolean` | Enables global acceleration. Requires server-side and bucket configuration. |
 | `chunkSize` | `number` | The size of each chunk in bytes for resumable uploads. |
-| `retryMax` | `number` | The maximum number of times to retry an upload for a failed chunk. |
-| `timeoutInterval` | `number` | The network timeout in seconds for each request. |
-| `useHttps` | `boolean` | Whether to use HTTPS for uploads. |
-| `enforceNewInstance` | `boolean` | If `true`, a new native instance will be created even if another instance with the same configuration already exists. |
+| `retryMax` | `number` | The maximum number of times to retry a failed chunk. |
+| `retryInterval` | `number` | Retry interval in seconds. |
+| `timeoutInterval` | `number` | Network timeout in seconds for each request. |
+| `allowBackupHost` | `boolean` | Allows backup upload hosts. |
+| `concurrentTaskCount` | `number` | Concurrent task count for multipart upload. |
 
-- `enforceNewInstance` is added by the library itself, not part of the official SDK configurations.
+### `qiniu.createUploadTask(options: UploadOptions)`
+
+Creates an upload task without starting it.
+
+#### `UploadTask`
+
+| Member | Type | Description |
+| --- | --- | --- |
+| `uploadId` | `string` | Local task identifier. Generated automatically when omitted. |
+| `key` | `string` | The Qiniu object key. |
+| `status` | `'idle' \| 'uploading' \| 'success' \| 'error' \| 'cancelled'` | Current task status. |
+| `onProgress(listener)` | `() => { remove(): void }` | Subscribes to progress for this task. |
+| `start()` | `() => Promise<UploadResult>` | Starts the upload. Calling it more than once returns the same promise. |
+| `cancel()` | `() => void` | Cancels this task. |
 
 ### `qiniu.upload(options: UploadOptions)`
 
-Uploads a file using the instance's configuration. Returns a `Promise` that resolves with the Qiniu server's response (as a JSON string) upon success, or rejects on failure.
+Deprecated compatibility wrapper. It creates a task internally and resolves with `UploadResult.raw` so existing callers continue receiving the raw JSON string.
 
 #### `UploadOptions` (Interface)
 
 | Property | Type | Required | Description |
 | --- | --- | --- | --- |
-| `uploadId` | `string` | Yes | A local identifier for this upload task. Use it to match progress events and cancel this specific upload. |
+| `uploadId` | `string` | No | A local identifier for this upload task. Generated automatically when omitted. |
 | `filePath` | `string` | Yes | The absolute local file path. **Note:** Must be a raw path, not a `file://` URI. Decode URI-encoded paths before passing. |
 | `key` | `string` | Yes | The destination key (filename) for the file in your Qiniu bucket. |
-| `token` | `string` | Yes | A valid upload token generated from your server. |
-| `onProgress` | `(event: UploadProgressEvent) => void` | No | A callback function that receives progress updates for the upload. |
+| `token` | `string` | No | A valid upload token. Overrides `QiniuConfig.tokenProvider` when present. |
+| `onProgress` | `(event: UploadProgressEvent) => void` | No | Compatibility progress callback. Prefer `task.onProgress()`. |
 
 ### `qiniu.cancel(uploadId: string)`
 
-Cancels an ongoing upload for a specific local `uploadId`.
+Deprecated compatibility wrapper. Prefer `UploadTask.cancel()`.
 
 ### `qiniu.destroy()`
 
 Decrements the reference count for the native instance. When all JS instances sharing the same configuration are destroyed, the underlying native instance is removed to free up resources.
+
+### `UploadResult` (Interface)
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `uploadId` | `string` | Local task identifier. |
+| `key` | `string` | The Qiniu object key. |
+| `statusCode` | `number` | Native SDK status code. |
+| `requestId` | `string` | Qiniu request ID when available. |
+| `host` | `string` | Upload host when available. |
+| `hash` | `string` | Parsed `hash` from the Qiniu response when available. |
+| `fsize` | `number` | Parsed `fsize` from the Qiniu response when available. |
+| `bucket` | `string` | Parsed `bucket` from the Qiniu response when available. |
+| `response` | `object` | Parsed response body. |
+| `raw` | `string` | Raw JSON response string. |
+
+### `QiniuUploadError`
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `code` | `string` | `TOKEN_MISSING`, `UPLOAD_ERROR`, `UPLOAD_CANCELLED`, or a native error code. |
+| `message` | `string` | Human-readable error message. |
+| `statusCode` | `number` | Native SDK status code when available. |
+| `requestId` | `string` | Qiniu request ID when available. |
+| `isCancelled` | `boolean` | Whether the upload was cancelled. |
+| `raw` | `unknown` | Raw native error metadata when available. |
 
 ### `ZoneRegionId` (Enum)
 
@@ -167,6 +220,10 @@ const qiniu2 = new Qiniu({ zone: ucZone });
 | `uploadId` | `string` | The local identifier of the upload task. |
 | `key` | `string` | The key of the file being uploaded. |
 | `percent` | `number` | The upload progress percentage (0 to 1). |
+
+### Platform Capability Notes
+
+The common config fields are intended to behave consistently on Android and iOS. `advanced` fields are passed through to the official native SDK builders; support depends on each SDK version. Global acceleration requires Qiniu server-side and bucket configuration on both platforms.
 
 -----
 
