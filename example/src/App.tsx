@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Text,
-  View,
-  StyleSheet,
-  Button,
   ActivityIndicator,
+  Alert,
+  Button,
   PermissionsAndroid,
   Platform,
-  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
 import {
   Qiniu,
@@ -24,15 +26,21 @@ import {
 } from '@react-native-documents/picker';
 import { Buffer } from '@craftzdog/react-native-buffer';
 
-// =[!]= IMPORTANT: This is only for testing purposes. Do NOT use this in production. =[!]=
-// Distribute your own access key and secret key from server instead of hardcoded.
-// Also currently there's a problem with Android's continuous upload on high versions (which caused by the picker and cache copying).
+type DemoCredentials = {
+  bucketName: string;
+  accessKey: string;
+  secretKey: string;
+  objectKey: string;
+};
 
-// Replace with your own bucket name, access key, and secret key.
-const BUCKET_NAME = 'your-bucket-name'; // Replace with your actual bucket name
-const AK = 'your-access-key'; // Replace with your actual Access Key
-const SK = 'your-secret-key'; // Replace with your actual Secret Key
-const TEST_FILE_NAME = 'testfile.dummy';
+type DemoCredentialField = keyof DemoCredentials;
+
+const emptyCredentials: DemoCredentials = {
+  bucketName: '',
+  accessKey: '',
+  secretKey: '',
+  objectKey: '',
+};
 
 const urlsafe_base64_encode = (str: string) => {
   return Buffer.from(str, 'utf8')
@@ -44,9 +52,46 @@ const urlsafe_base64_encode = (str: string) => {
 const hmac_sha1 = (key: string, data: string) =>
   QuickCrypto.createHmac('sha1', key).update(data).digest('base64');
 
-const createDemoUploadToken = (key: string) => {
-  const scope = `${BUCKET_NAME}:${key}`;
-  console.log('Scope:', scope);
+const normalizeCredentials = (
+  credentials: DemoCredentials
+): DemoCredentials => ({
+  bucketName: credentials.bucketName.trim(),
+  accessKey: credentials.accessKey.trim(),
+  secretKey: credentials.secretKey.trim(),
+  objectKey: credentials.objectKey.trim(),
+});
+
+const getMissingCredentialFields = (credentials: DemoCredentials) => {
+  const missingFields: string[] = [];
+
+  if (!credentials.bucketName) {
+    missingFields.push('Bucket');
+  }
+  if (!credentials.accessKey) {
+    missingFields.push('Access Key');
+  }
+  if (!credentials.secretKey) {
+    missingFields.push('Secret Key');
+  }
+  if (!credentials.objectKey) {
+    missingFields.push('Object Key');
+  }
+
+  return missingFields;
+};
+
+const createDemoUploadToken = ({
+  bucketName,
+  accessKey,
+  secretKey,
+  key,
+}: {
+  bucketName: string;
+  accessKey: string;
+  secretKey: string;
+  key: string;
+}) => {
+  const scope = `${bucketName}:${key}`;
   const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
   const returnBody = {
     message: 'Upload successful',
@@ -59,22 +104,20 @@ const createDemoUploadToken = (key: string) => {
     deadline,
     returnBody: JSON.stringify(returnBody),
   });
-  console.log('Put Policy:', putPolicy);
   const encodedPutPolicy = urlsafe_base64_encode(putPolicy);
-  console.log('Encoded Put Policy:', encodedPutPolicy);
-  const sign = hmac_sha1(SK, encodedPutPolicy);
-  console.log('Signature:', sign);
+  const sign = hmac_sha1(secretKey, encodedPutPolicy);
   const encodedSign = sign.replace(/\//g, '_').replace(/\+/g, '-');
-  const uploadToken = `${AK}:${encodedSign}:${encodedPutPolicy}`;
-  console.log('Generated upload token:', uploadToken);
-  return uploadToken;
+  return `${accessKey}:${encodedSign}:${encodedPutPolicy}`;
 };
 
 export default function App() {
+  const [credentials, setCredentials] =
+    useState<DemoCredentials>(emptyCredentials);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading, setIsUploading] = useState(false);
+  const credentialsRef = useRef(credentials);
   const currentTaskRef = useRef<UploadTask | null>(null);
 
   const qiniu = useMemo(
@@ -84,16 +127,38 @@ export default function App() {
         resumeUploadVersion: 'v2',
         useConcurrentResumeUpload: true,
         putThreshold: 4 * 1024 * 1024, // 4MB
-        tokenProvider: ({ key }) => createDemoUploadToken(key),
+        tokenProvider: ({ key }) => {
+          const currentCredentials = normalizeCredentials(
+            credentialsRef.current
+          );
+
+          return createDemoUploadToken({
+            bucketName: currentCredentials.bucketName,
+            accessKey: currentCredentials.accessKey,
+            secretKey: currentCredentials.secretKey,
+            key,
+          });
+        },
       }),
     []
   );
+
+  useEffect(() => {
+    credentialsRef.current = credentials;
+  }, [credentials]);
 
   useEffect(() => {
     return () => {
       qiniu.destroy();
     };
   }, [qiniu]);
+
+  const updateCredential = (field: DemoCredentialField, value: string) => {
+    setCredentials((currentCredentials) => ({
+      ...currentCredentials,
+      [field]: value,
+    }));
+  };
 
   const requestStoragePermission = async () => {
     if (Platform.OS !== 'android') {
@@ -175,6 +240,14 @@ export default function App() {
 
   const handleUpload = async () => {
     console.log('Starting upload...');
+    const currentCredentials = normalizeCredentials(credentials);
+    const missingFields = getMissingCredentialFields(currentCredentials);
+
+    if (missingFields.length > 0) {
+      setError(`Please fill ${missingFields.join(', ')} before uploading.`);
+      return;
+    }
+
     setIsUploading(true);
     setResult(null);
     setError(null);
@@ -188,9 +261,9 @@ export default function App() {
     console.log('Selected file path:', filePath);
 
     const task = qiniu.createUploadTask({
-      uploadId: `${TEST_FILE_NAME}-${Date.now()}`,
+      uploadId: `${currentCredentials.objectKey}-${Date.now()}`,
       filePath,
-      key: TEST_FILE_NAME,
+      key: currentCredentials.objectKey,
     });
     currentTaskRef.current = task;
     const subscription = task.onProgress((event) => {
@@ -233,38 +306,128 @@ export default function App() {
   };
 
   return (
-    <View style={styles.container}>
-      <Text>React Native Better Qiniu Example</Text>
+    <ScrollView
+      contentContainerStyle={styles.container}
+      keyboardShouldPersistTaps="handled"
+    >
+      <Text style={styles.title}>Qiniu Upload Demo</Text>
+      <View style={styles.form}>
+        <Text style={styles.label}>Bucket</Text>
+        <TextInput
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={(value) => updateCredential('bucketName', value)}
+          placeholder="your-bucket-name"
+          placeholderTextColor="#8a94a6"
+          style={styles.input}
+          value={credentials.bucketName}
+        />
+        <Text style={styles.label}>Access Key</Text>
+        <TextInput
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={(value) => updateCredential('accessKey', value)}
+          placeholder="your-access-key"
+          placeholderTextColor="#8a94a6"
+          style={styles.input}
+          value={credentials.accessKey}
+        />
+        <Text style={styles.label}>Secret Key</Text>
+        <TextInput
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={(value) => updateCredential('secretKey', value)}
+          placeholder="your-secret-key"
+          placeholderTextColor="#8a94a6"
+          secureTextEntry
+          style={styles.input}
+          value={credentials.secretKey}
+        />
+        <Text style={styles.label}>Object Key</Text>
+        <TextInput
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={(value) => updateCredential('objectKey', value)}
+          placeholder="uploads/demo-file"
+          placeholderTextColor="#8a94a6"
+          style={styles.input}
+          value={credentials.objectKey}
+        />
+      </View>
       {isUploading ? (
-        <View style={{ marginTop: 20, marginBottom: 20 }}>
-          <ActivityIndicator size="large" style={{ marginBottom: 20 }} />
+        <View style={styles.actions}>
+          <ActivityIndicator size="large" style={styles.activity} />
           <Button title="Cancel" onPress={handleCancelUpload} />
         </View>
       ) : (
-        <View style={{ marginTop: 20, marginBottom: 20 }}>
+        <View style={styles.actions}>
           <Button title="Select File & Start Upload" onPress={handleUpload} />
         </View>
       )}
       {isUploading && (
-        <Text>Uploading... Process: {Math.round(uploadProgress * 100)}%</Text>
-      )}
-      {result && (
-        <Text style={{ marginTop: 20, color: 'green' }}>
-          Upload Result: {result}
+        <Text style={styles.progress}>
+          Uploading... Process: {Math.round(uploadProgress * 100)}%
         </Text>
       )}
-      {error && (
-        <Text style={{ marginTop: 20, color: 'red' }}>Error: {error}</Text>
-      )}
-    </View>
+      {result && <Text style={styles.result}>Upload Result: {result}</Text>}
+      {error && <Text style={styles.error}>Error: {error}</Text>}
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
-    alignItems: 'center',
+    flexGrow: 1,
     justifyContent: 'center',
-    paddingHorizontal: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 32,
+    backgroundColor: '#f6f8fb',
+  },
+  title: {
+    color: '#172033',
+    fontSize: 22,
+    fontWeight: '600',
+    marginBottom: 24,
+    textAlign: 'center',
+  },
+  form: {
+    width: '100%',
+    gap: 8,
+  },
+  label: {
+    color: '#2d3748',
+    fontSize: 14,
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  input: {
+    width: '100%',
+    minHeight: 46,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    backgroundColor: '#ffffff',
+    color: '#172033',
+    fontSize: 15,
+    paddingHorizontal: 12,
+  },
+  actions: {
+    marginBottom: 20,
+    marginTop: 24,
+  },
+  activity: {
+    marginBottom: 20,
+  },
+  progress: {
+    color: '#172033',
+    textAlign: 'center',
+  },
+  result: {
+    color: '#16833a',
+    marginTop: 20,
+  },
+  error: {
+    color: '#c92a2a',
+    marginTop: 20,
   },
 });
