@@ -9,7 +9,11 @@ import {
   Platform,
   Alert,
 } from 'react-native';
-import { Qiniu } from 'react-native-better-qiniu';
+import {
+  Qiniu,
+  QiniuUploadError,
+  type UploadTask,
+} from 'react-native-better-qiniu';
 import QuickCrypto from 'react-native-quick-crypto';
 import {
   pick,
@@ -40,20 +44,47 @@ const urlsafe_base64_encode = (str: string) => {
 const hmac_sha1 = (key: string, data: string) =>
   QuickCrypto.createHmac('sha1', key).update(data).digest('base64');
 
+const createDemoUploadToken = (key: string) => {
+  const scope = `${BUCKET_NAME}:${key}`;
+  console.log('Scope:', scope);
+  const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+  const returnBody = {
+    message: 'Upload successful',
+    file: '${fname}',
+    size: '${fsize}',
+    hash: '${etag}',
+  };
+  const putPolicy = JSON.stringify({
+    scope,
+    deadline,
+    returnBody: JSON.stringify(returnBody),
+  });
+  console.log('Put Policy:', putPolicy);
+  const encodedPutPolicy = urlsafe_base64_encode(putPolicy);
+  console.log('Encoded Put Policy:', encodedPutPolicy);
+  const sign = hmac_sha1(SK, encodedPutPolicy);
+  console.log('Signature:', sign);
+  const encodedSign = sign.replace(/\//g, '_').replace(/\+/g, '-');
+  const uploadToken = `${AK}:${encodedSign}:${encodedPutPolicy}`;
+  console.log('Generated upload token:', uploadToken);
+  return uploadToken;
+};
+
 export default function App() {
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading, setIsUploading] = useState(false);
-  const currentUploadIdRef = useRef<string | null>(null);
+  const currentTaskRef = useRef<UploadTask | null>(null);
 
   const qiniu = useMemo(
     () =>
-      new Qiniu({
+      Qiniu.shared({
         zone: 'auto',
         resumeUploadVersion: 'v2',
         useConcurrentResumeUpload: true,
         putThreshold: 4 * 1024 * 1024, // 4MB
+        tokenProvider: ({ key }) => createDemoUploadToken(key),
       }),
     []
   );
@@ -155,63 +186,39 @@ export default function App() {
       return;
     }
     console.log('Selected file path:', filePath);
-    // Below are the token generation steps, only for demonstration purposes.
-    // In production, you should generate the token on your server and pass it to the app
-    const scope = `${BUCKET_NAME}:${TEST_FILE_NAME}`;
-    console.log('Scope:', scope);
-    const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
-    const returnBody = {
-      message: 'Upload successful',
-      file: '${fname}',
-      size: '${fsize}',
-      hash: '${etag}',
-    };
-    const putPolicy = JSON.stringify({
-      scope,
-      deadline,
-      returnBody: JSON.stringify(returnBody),
-    });
-    console.log('Put Policy:', putPolicy);
-    const encodedPutPolicy = urlsafe_base64_encode(putPolicy);
-    console.log('Encoded Put Policy:', encodedPutPolicy);
-    const sign = hmac_sha1(SK, encodedPutPolicy);
-    console.log('Signature:', sign);
-    const encodedSign = sign.replace(/\//g, '_').replace(/\+/g, '-');
-    const uploadToken = `${AK}:${encodedSign}:${encodedPutPolicy}`;
-    console.log('Generated upload token:', uploadToken);
 
-    if (!filePath) {
-      console.error('File path is not set.');
-      return;
-    }
-    // Upload file
-    const uploadId = `${TEST_FILE_NAME}-${Date.now()}`;
-    currentUploadIdRef.current = uploadId;
+    const task = qiniu.createUploadTask({
+      uploadId: `${TEST_FILE_NAME}-${Date.now()}`,
+      filePath,
+      key: TEST_FILE_NAME,
+    });
+    currentTaskRef.current = task;
+    const subscription = task.onProgress((event) => {
+      setUploadProgress(event.percent);
+      console.log(`Upload Progress: ${Math.round(event.percent * 100)}%`);
+    });
+
     console.log('Uploading file:', filePath);
-    qiniu
-      .upload({
-        uploadId,
-        filePath,
-        key: 'testfile.dummy',
-        token: uploadToken,
-        onProgress: (event) => {
-          setUploadProgress(event.percent);
-          console.log(`Upload Progress: ${Math.round(event.percent * 100)}%`);
-        },
-      })
+    task
+      .start()
       .then((response) => {
-        setUploadProgress(100);
-        setResult(JSON.stringify(response));
+        setUploadProgress(1);
+        setResult(JSON.stringify(response, null, 2));
         setError(null);
         console.log('Upload complete!', response);
       })
       .catch((err) => {
-        setError(err.message);
+        if (err instanceof QiniuUploadError && err.isCancelled) {
+          setError('Upload cancelled.');
+        } else {
+          setError(err instanceof Error ? err.message : String(err));
+        }
         console.error('Upload failed or was cancelled.', err);
       })
       .finally(() => {
-        if (currentUploadIdRef.current === uploadId) {
-          currentUploadIdRef.current = null;
+        subscription.remove();
+        if (currentTaskRef.current === task) {
+          currentTaskRef.current = null;
         }
         setIsUploading(false);
       });
@@ -219,11 +226,8 @@ export default function App() {
 
   const handleCancelUpload = () => {
     console.log('Cancelling upload...');
-    const uploadId = currentUploadIdRef.current;
-    if (uploadId) {
-      qiniu.cancel(uploadId);
-      currentUploadIdRef.current = null;
-    }
+    currentTaskRef.current?.cancel();
+    currentTaskRef.current = null;
     setIsUploading(false);
     setUploadProgress(0);
   };
