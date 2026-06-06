@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 - 2026-06-06
+
+### Changed
+
+- Upgraded the Android Qiniu SDK dependency to 8.11.0.
+
 ## 1.0.0 - 2026-06-05
 
 ### Added
